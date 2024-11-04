@@ -1,0 +1,5 @@
+/.DS_Store
+/.ipynb_checkpoints
+/secret.env
+/solana_meme_screener.py
+/utils.py
