@@ -1,4 +1,3 @@
-# Import essential packages
 import requests as r
 import json
 import time
@@ -6,8 +5,11 @@ import random
 import logging
 import asyncio
 import os
+
 from dotenv import load_dotenv
+
 from playwright.async_api import async_playwright, Playwright, expect
+
 
 # Import Dune-related funcs
 from dune_client.types import QueryParameter
@@ -116,7 +118,6 @@ async def run(playwright: Playwright):
         await library_btn_locator.click()
         logger.info("Clicked Library button!")
 
-
         # Search for Solana query
         search_locator = page.locator('input[placeholder="Search content"]')
         await search_locator.fill('top trading memecoins (solana)')
@@ -128,7 +129,6 @@ async def run(playwright: Playwright):
         await query_locator.click()
         logger.info("Clicked solana query!")
 
-
         # Trigger Solana query run
         run_btn_locator = page.locator('button[id="run-query-button"]')
         await run_btn_locator.click()
@@ -139,15 +139,34 @@ async def run(playwright: Playwright):
         await expect(run_btn_locator).to_have_text(expected="Run",timeout=240000)
         logger.info("Button text changed from 'Cancel' to 'Run'.")
         logger.info("Query Run Completed!")
+        
+        # Check if its query time out and retry if so, else skip if fail again
+        query_box = page.locator('div[class="visual_result__6q0xu"]')
+        box_text = await query_box.inner_text()
+        if 'Query execution timed out' in box_text:
+            await run_btn_locator.click()
+            await page.wait_for_selector("button[class='Button_button__MJ5pb buttonThemes_button__jfRFC buttonThemes_loading__XjQdr buttonThemes_theme-tertiary__v7VoN Button_size-M__fDw4z']", timeout=120000)
+            logger.info("Triggered query run...")
+            await expect(run_btn_locator).to_have_text(expected="Cancel",timeout=60000)
+            logger.info("Button text changed from 'Run' to 'Cancel'.")
+            await expect(run_btn_locator).to_have_text(expected="Run",timeout=240000)
+            logger.info("Button text changed from 'Cancel' to 'Run'.")
+            logger.info("Query Run Completed!")
+            box_text = await query_box.inner_text()
+            if 'Query execution timed out' in box_text:
+                logger.info("Query execution failed twice, skipping this iteration!")
+                raise Exception("Query execution failed! Skipping now...")
 
         # Retrieve query result
         dune = DuneClient(os.getenv('dune-api-key'))
         query_result = dune.get_latest_result_dataframe(os.getenv('dune-solana-query')).sort_values(by='pool_created', ascending=False)
         logger.info("Retrieved result!")
-
-        # Initialise placeholders
+        
+        # result placeholder for checks
         result_cnt = 0
-        solana_message = "📈  New Potential 🟣 SOL 🟣 Tokens to APE!!!  📈 \n\n"
+        
+        # Set up telegram api
+
 
         logger.info("Running through query result")
         if len(query_result):
@@ -165,10 +184,13 @@ async def run(playwright: Playwright):
                 liquidity = None
                 gecko_url = None
                 swap_url = None
+                gmgn_ai_url = None
                 misc = None
                 
                 solsniffer = None
                 gecko_terminal = None
+
+                solana_message = "📈 New Potential 🟣 SOL 🟣 Tokens to APE!!! 📈\n\n"
 
                 logger.info(f"Looking into token: {row['token_address']}")
                 logger.info("Calling security API...")
@@ -187,9 +209,9 @@ async def run(playwright: Playwright):
                     await page.goto(f"https://solsniffer.com/api/v1/sniffer/token/{row['token_address']}", wait_until="load", timeout=60000)
                     logger.info("Calling security API 2nd try...")
                     solsniffer = await page.evaluate("document.body.innerText")
-                    solsniffer = json.loads(solsniffer)['tokenData']
                 
                 try:
+                    solsniffer = json.loads(solsniffer)['tokenData']
                     audit = solsniffer['auditRisk']
                     logger.info("Retrieved security data!")
                     logger.info(f"audit data checker: {audit.keys()}")
@@ -208,15 +230,16 @@ async def run(playwright: Playwright):
                     # need to manually trigger and check ourselves unfortunately
                     # include manual security check alert!
                     logger.error(e, stack_info=True, exc_info=True)
-                    logger.info("Manual security data needed!")
-                    misc = "Alert: Check solsniffer manually!!!"
+                    logger.info("Manual security and holder checks needed!")
+                    top10_holder = f"[Check solscan OR GMGN manually for top10 and audit data!!!](https://solsniffer.com/scanner/{row['token_address']})"
+                    misc = f"[Check solsniffer manually!!!](https://solsniffer.com/api/v1/sniffer/token/{row['token_address']})"
                 
                 logger.info("Calling Gecko API...")
                 try:
                     await page.goto(f"https://app.geckoterminal.com/api/p1/solana/pools/{row['pool_address']}"+\
                                     "?include=dex%2Cdex.network.explorers%2Cdex_link_services"+\
                                     "%2Cnetwork_link_services%2Cpairs%2Ctoken_link_services%2Ctokens.token_security_metric"+\
-                                    "%2Ctokens.tags%2Cpool_locked_liquidities&base_token=0", wait_until="networkidle", timeout=60000)
+                                    "%2Ctokens.tags%2Cpool_locked_liquidities&base_token=0", wait_until="load", timeout=60000)
                     gecko_terminal = await page.evaluate("document.body.innerText")
                     gecko_terminal = json.loads(gecko_terminal)
                 except: # Remedy if rate limit is hit, else error pop up again if api changes which then require intervention
@@ -224,7 +247,7 @@ async def run(playwright: Playwright):
                     await page.goto(f"https://app.geckoterminal.com/api/p1/solana/pools/{row['pool_address']}"+\
                                     "?include=dex%2Cdex.network.explorers%2Cdex_link_services"+\
                                     "%2Cnetwork_link_services%2Cpairs%2Ctoken_link_services%2Ctokens.token_security_metric"+\
-                                    "%2Ctokens.tags%2Cpool_locked_liquidities&base_token=0", wait_until="networkidle", timeout=60000)
+                                    "%2Ctokens.tags%2Cpool_locked_liquidities&base_token=0", wait_until="load", timeout=60000)
                     gecko_terminal = await page.evaluate("document.body.innerText")
                     gecko_terminal = json.loads(gecko_terminal)
                 logger.info("Market data retrieved!")
@@ -239,8 +262,8 @@ async def run(playwright: Playwright):
                     if 'soul_scanner_data' in e['attributes'] and e['attributes']['soul_scanner_data']['deployer']:
                         holder_cnt = e['attributes']['holder_count']
                     elif e['type'] == 'pair':
-                        token_name = e['attributes']['name'] if 'name' in e['attributes'].keys else e['attributes']['base_name']
-                        token_symbol = e['attributes']['symbol'] if 'symbol' in e['attributes'].keys else e['attributes']['base_symbol']
+                        token_name = e['attributes']['base_name'] if 'base_name' in e['attributes'].keys() else e['attributes']['name']
+                        token_symbol = e['attributes']['base_symbol'] if 'base_symbol' in e['attributes'].keys() else e['attributes']['symbol']
                 
                 current_change = gecko_terminal['data']['attributes']['price_percent_change']
                 
@@ -263,38 +286,46 @@ async def run(playwright: Playwright):
                     liquidity = f"{liquidity / 1000.0:.2f}K"      # Convert to thousands
                 
                 gecko_url = f"https://www.geckoterminal.com/solana/pools/{row['pool_address']}"
+                gmgn_ai_url = f"https://gmgn.ai/sol/token/{token_address}"
                 swap_url = f"https://www.raydium.io/swap/?inputMint=So11111111111111111111111111111111111111112&outputMint={token_address}"
 
                 # Add to main message
-                solana_message += f"👉 {token_name} -- ${token_symbol}"+\
-                f"\n 📌 Address: _{token_address}_"+\
-                f"\n 🕒 Pool Created: {pool_created}"+\
-                f"\n 👑 Top 10 Holder: {round(top10_holder,2)}%"+\
-                f"\n 💎 Holder Count: {holder_cnt}"+\
-                f"\n 📈 Price Change: {current_change}"+\
-                f"\n 🏛️ Market Cap: ${mkt_cap}"+\
-                f"\n 📊 Volume: ${volume}"+\
-                f"\n 💰 Liquidity: ${liquidity}"+\
-                f"\n 🦎 GeckoTerminal Link: {gecko_url}"+\
-                f"\n 🔄 Raydium Link: {swap_url}"+\
-                f"\n 🛠 Misc.: {misc} \n\n"
-                logger.info("Message appended!")
-
+                # Constructing the message with Markdown formatting
+                # Split message into 2 parts cause character limitations via API
+                solana_message_1 = solana_message + f"👉 *{token_name}* -- ${token_symbol}\n"+\
+                    f"📌 Address: `{token_address}`\n"+\
+                    f"🕒 Pool Created: {pool_created}\n"+\
+                    f"👑 Top 10 Holder: {round(top10_holder, 2) if type(top10_holder) == float else top10_holder}%\n"+\
+                    f"💎 Holder Count: {holder_cnt}\n"+\
+                    f"📈 Price Change: {current_change}\n"+\
+                    f"🏛️ Market Cap: ${mkt_cap}\n"+\
+                    f"📊 Volume: ${volume}\n"+\
+                    f"💰 Liquidity: ${liquidity}\n"
+                solana_message_2 = f"🦎 [Gecko Terminal]({gecko_url})\n"+\
+                    f"🌞🌚 [GMGN.AI]({gmgn_ai_url})\n"+\
+                    f"🔄 [Raydium Link]({swap_url})\n"+\
+                    f"Misc: {misc}"
+                
+                logger.info(solana_message_1)
+                logger.info(solana_message_2)
+                logger.info("Main Message appended!")
                 result_cnt += 1
-        
+                logger.info(f"Result Count: {result_cnt}")
+
+                logger.info("Sending results via Telegram API...")
+                for i, msg in enumerate([solana_message_1,solana_message_2]):
+                    url = f"https://api.telegram.org/bot{os.getenv('telegram-bot-api-key')}/sendMessage?chat_id={os.getenv('solana-chat-id')}&text={msg}&parse_mode=Markdown"
+                    SentMessageResult = r.get(url).json()
+                    if SentMessageResult['ok']:
+                        logger.info(f"Telegram Message Part {i} sent!")
+                        #SentMessageID = int(SentMessageResult['result']['message_id'])
+                        pass
+                    else:
+                        logger.info(f"Telegram Message Part {i} sent!")
+                        #SentMessageID = 0
+
         logger.info("Finished screening through query!")
 
-        if result_cnt:
-            logger.info("Sending results via Telegram API...")
-            url = f"https://api.telegram.org/bot{os.getenv('telegram-bot-api-key')}/sendMessage?chat_id={os.getenv('solana-chat-id')}&text={solana_message}&parse_mode=Markdown"
-            SentMessageResult = r.get(url).json()
-            if SentMessageResult['ok']:
-                logger.info("Telegram Message sent!")
-                #SentMessageID = int(SentMessageResult['result']['message_id'])
-                pass
-            else:
-                logging.info("Telegram Message was not sent")
-                #SentMessageID = 0
     except Exception as e:
         logger.error(e, stack_info=True, exc_info=True)
     
@@ -310,6 +341,3 @@ async def main():
         await run(playwright)
 
 asyncio.run(main())
-
-
-
