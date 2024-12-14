@@ -6,10 +6,10 @@ WORKDIR /app
 COPY . .
 
 # Install necessary packages including Xvfb
-# RUN apt-get update && \
-#     apt-get install -y xvfb && \
-#     apt-get clean && \
-#     rm -rf /var/lib/apt/lists/*
+RUN apt-get update && \
+    apt-get install -y xvfb && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
 # Install required dependencies
 RUN pip install --no-cache-dir -r requirements.txt
@@ -17,5 +17,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Run playwright install to ensure all browsers are downloaded
 RUN playwright install --with-deps chromium
 
+# Create a directory for screenshots
+RUN mkdir -p /app/screenshots
+
 # Command to run the scraper script
-CMD ["python", "solana_meme_screener.py"]
+#CMD ["python", "solana_meme_screener.py"]
+CMD ["sh", "-c", "xvfb-run -a python solana_meme_screener.py"]

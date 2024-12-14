@@ -1,3 +1,3 @@
 echo "Running Docker..."
-docker run solana_meme_playwright
+docker run --rm -v /memecoin_screener/screenshot:/app/screenshots solana_meme_playwright:latest
 echo "Finished Docker Execution"
