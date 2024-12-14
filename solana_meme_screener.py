@@ -1,3 +1,4 @@
+# Import essential packages
 import requests as r
 import json
 import time
@@ -34,9 +35,46 @@ if not logger.handlers:
     logger.setLevel(logging.INFO)
 
 
+async def collect_response(response,collected_responses):
+    # We only collect 1 specific response
+    
+    # Check if the response URL contains specific text
+    if "gmgn.ai/api/v1/token_security_sol/" in response.url:
+    #     json_body = await response.json()
+    #     collected_responses.append(json_body)
+    #     logger.info("Collected response:", json_body)
+    # else:
+    #     pass
+        try:
+            # Check if the response status is OK
+            if response.status == 200:
+                json_body = await response.json()
+                collected_responses.append(json_body)
+                logging.info("Collected response: %s", json_body)
+            else:
+                logging.warning("Received non-200 response: %s", response.status)
+        except Exception as e:
+            logging.error("Failed to parse JSON from response: %s", str(e))
+            logging.debug("Response body: %s", await response.text())
+
+async def handle_response(response,collected_responses):
+    await collect_response(response, collected_responses)
+
+
+async def wait_for_response(collected_responses, timeout=30):
+    start_time = asyncio.get_event_loop().time()
+    while not collected_responses:
+        if asyncio.get_event_loop().time() - start_time > timeout:
+            logging.error("Timeout waiting for GMGN security XHR response.")
+            return False  # Indicate that no response was collected
+        logging.info("Waiting for GMGN security XHR response...")
+        await asyncio.sleep(1)  # Yield control back to the event loop
+    return True  # Response was successfully collected
+
+
 async def run(playwright: Playwright):
     chromium = playwright.chromium
-    browser = await chromium.launch(headless=True)
+    browser = await chromium.launch(headless=False)
     try:
         # Set initial browser context to avoid detection
         context = await browser.new_context(
@@ -46,9 +84,30 @@ async def run(playwright: Playwright):
 
         # Create a new page
         page = await context.new_page()
+        
+        # Set up XHR requests handler list
+        collected_responses = []
+        
 
         # Navigate to Dune Analytics Site
-        await page.goto("https://dune.com/discover/content/trending",wait_until="networkidle", timeout=120000)
+        await page.goto("https://dune.com/discover/content/trending",wait_until="load", timeout=20000)
+        
+
+        # Account for unexpected Dunecon related annoucemnet pop out box as of 25th Nov 2024
+        try:
+            await expect(page.locator("button[class='Button_button__MJ5pb "+\
+                                      "buttonThemes_button__jfRFC "+\
+                                      "buttonThemes_theme-tertiary__v7VoN Button_size-M__fDw4z']")).to_be_visible(timeout=5000)
+            logger.info("Pop out dialog detected!")
+            popout_close =  page.locator("button[class='Button_button__MJ5pb "+\
+                                      "buttonThemes_button__jfRFC "+\
+                                      "buttonThemes_theme-tertiary__v7VoN Button_size-M__fDw4z']")
+            await popout_close.click()
+            logger.info("Pop out dialog closed!")
+        except:
+            logger.info("Pop out dialog not detected!")
+            pass
+
 
         # Locate navigation panel in the form of ul tag
         await expect(page.locator("ul[class='SidePanel_panel__bZFcx']")).to_be_visible(timeout=20000) 
@@ -68,9 +127,11 @@ async def run(playwright: Playwright):
         for i in range(5):
             category_choice = random.choice([0,1,2])
             category = category_items.locator('li')
-            await category.nth(category_choice).click()
+            category = category.nth(category_choice)
+            if await category.is_visible() and await category.is_enabled():
+                await category.click()
             try:
-                await page.wait_for_function("window.location.href.includes('login')",timeout=10000)
+                await page.wait_for_function("window.location.href.includes('login')",timeout=5000)
                 break
             except:
                 pass
@@ -81,7 +142,7 @@ async def run(playwright: Playwright):
             chosen = option_items.nth(option_choice)
             await chosen.click()
             try:
-                await page.wait_for_function("window.location.href.includes('login')",timeout=10000)
+                await page.wait_for_function("window.location.href.includes('login')",timeout=5000)
                 break
             except:
                 pass
@@ -136,7 +197,7 @@ async def run(playwright: Playwright):
         logger.info("Triggered query run...")
         await expect(run_btn_locator).to_have_text(expected="Cancel",timeout=60000)
         logger.info("Button text changed from 'Run' to 'Cancel'.")
-        await expect(run_btn_locator).to_have_text(expected="Run",timeout=240000)
+        await expect(run_btn_locator).to_have_text(expected="Run",timeout=300000)
         logger.info("Button text changed from 'Cancel' to 'Run'.")
         logger.info("Query Run Completed!")
         
@@ -149,7 +210,7 @@ async def run(playwright: Playwright):
             logger.info("Triggered query run...")
             await expect(run_btn_locator).to_have_text(expected="Cancel",timeout=60000)
             logger.info("Button text changed from 'Run' to 'Cancel'.")
-            await expect(run_btn_locator).to_have_text(expected="Run",timeout=240000)
+            await expect(run_btn_locator).to_have_text(expected="Run",timeout=300000)
             logger.info("Button text changed from 'Cancel' to 'Run'.")
             logger.info("Query Run Completed!")
             box_text = await query_box.inner_text()
@@ -157,6 +218,9 @@ async def run(playwright: Playwright):
                 logger.info("Query execution failed twice, skipping this iteration!")
                 raise Exception("Query execution failed! Skipping now...")
 
+        # Close page object for token data collection later
+        await page.close()
+        await context.close()
         # Retrieve query result
         dune = DuneClient(os.getenv('dune-api-key'))
         query_result = dune.get_latest_result_dataframe(os.getenv('dune-solana-query')).sort_values(by='pool_created', ascending=False)
@@ -165,8 +229,6 @@ async def run(playwright: Playwright):
         # result placeholder for checks
         result_cnt = 0
         
-        # Set up telegram api
-
 
         logger.info("Running through query result")
         if len(query_result):
@@ -187,52 +249,94 @@ async def run(playwright: Playwright):
                 gmgn_ai_url = None
                 misc = None
                 
-                solsniffer = None
+                solsniffer = None # not in use now
                 gecko_terminal = None
 
                 solana_message = "📈 New Potential 🟣 SOL 🟣 Tokens to APE!!! 📈\n\n"
 
                 logger.info(f"Looking into token: {row['token_address']}")
-                logger.info("Calling security API...")
-                # Check for security, if fail skip token
-                try:
-                    await page.goto(f"https://solsniffer.com/scanner/{row['token_address']}", wait_until="load", timeout=60000) # let solsniffer trigger checks
-                    await page.goto(f"https://solsniffer.com/api/v1/sniffer/token/{row['token_address']}", wait_until="load", timeout=60000)
-                    solsniffer = await page.evaluate("document.body.innerText")
-                    logger.info("Calling security API 1st try...")
-                    solsniffer = json.loads(solsniffer)['tokenData']
-                    if solsniffer == {}:
-                        logger.info("Empty Security Data!")
-                        raise Exception
-                except: # Remedy if rate limit is hit, else error pop up again if api changes
-                    time.sleep(10)
-                    await page.goto(f"https://solsniffer.com/api/v1/sniffer/token/{row['token_address']}", wait_until="load", timeout=60000)
-                    logger.info("Calling security API 2nd try...")
-                    solsniffer = await page.evaluate("document.body.innerText")
                 
-                try:
-                    solsniffer = json.loads(solsniffer)['tokenData']
-                    audit = solsniffer['auditRisk']
-                    logger.info("Retrieved security data!")
-                    logger.info(f"audit data checker: {audit.keys()}")
-                    if (audit['mintDisabled'] == True) and (audit['freezeDisabled'] == True) and (audit['lpBurned'] == True):
-                        if len(solsniffer['ownersList']) >= 11:
-                            for e in solsniffer['ownersList'][1:11]: # exclude pool %
-                                top10_holder += float(e['percentage'])
-                        else:
-                            for e in solsniffer['ownersList'][1:]: # exclude pool %
-                                top10_holder += float(e['percentage'])      
+                logger.info("Calling security API...")
+                collected_responses.clear() # clear response list before starting new gmgn page load
+                # page.on("response", lambda response: asyncio.create_task(handle_response(response, collected_responses)))
+                time.sleep(1)
+                # Set initial browser context to avoid detection
+                context = await browser.new_context(
+                    viewport={'width': 1280, 'height': 720},  # Set desired window size
+                    user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15'  # Set custom user agent
+                )
+
+                # Create a new page
+                page = await context.new_page()
+                
+                async def on_response(response):
+                    await handle_response(response, collected_responses)
+
+                page.on("response", on_response)
+                await page.goto(f"https://gmgn.ai/sol/token/{row['token_address']}",wait_until="load")
+
+                # while not collected_responses:
+                #     logger.info("Waiting for GMGN security XHR response...")
+                #     await asyncio.sleep(1)
+                # else:
+                #     logger.info("GMGN security XHR response sucessfully recorded!")
+
+                if await wait_for_response(collected_responses):
+                    logging.info("GMGN security XHR response successfully recorded!")
+                else:
+                    logging.warning("No GMGN security XHR response collected.")
+                
+                # Check if we have collected responses before accessing them
+                if collected_responses:
+                    security = collected_responses[0] # Get the first response (already awaited)
+                    security = security['data']  # Access 'data' from the JSON response
+                    if security['renounced_mint'] == True and security['renounced_freeze_account'] == True and security['burn_status'] == 'burn':
+                        top10_holder = float(security['top_10_holder_rate']) * 100.0
                     else:
                         logger.info("Skipped with audit failed!")
                         continue
-                except Exception as e:
-                    # solsniffer might not have enough time to check all newly launched tokens
-                    # need to manually trigger and check ourselves unfortunately
-                    # include manual security check alert!
-                    logger.error(e, stack_info=True, exc_info=True)
-                    logger.info("Manual security and holder checks needed!")
-                    top10_holder = f"[Check solscan OR GMGN manually for top10 and audit data!!!](https://solsniffer.com/scanner/{row['token_address']})"
-                    misc = f"[Check solsniffer manually!!!](https://solsniffer.com/api/v1/sniffer/token/{row['token_address']})"
+                else:
+                    logger.info("No responses collected.")
+                
+                # Solsniffer method -- not reliable at times, discarding it for GMGN.ai XHR requests instead
+                # try:
+                #     await page.goto(f"https://solsniffer.com/scanner/{row['token_address']}", wait_until="load", timeout=60000) # let solsniffer trigger checks
+                #     await page.goto(f"https://solsniffer.com/api/v1/sniffer/token/{row['token_address']}", wait_until="load", timeout=60000)
+                #     solsniffer = await page.evaluate("document.body.innerText")
+                #     logger.info("Calling security API 1st try...")
+                #     solsniffer = json.loads(solsniffer)['tokenData']
+                #     if solsniffer == {}:
+                #         logger.info("Empty Security Data!")
+                #         raise Exception
+                # except: # Remedy if rate limit is hit, else error pop up again if api changes
+                #     time.sleep(10)
+                #     await page.goto(f"https://solsniffer.com/api/v1/sniffer/token/{row['token_address']}", wait_until="load", timeout=60000)
+                #     logger.info("Calling security API 2nd try...")
+                #     solsniffer = await page.evaluate("document.body.innerText")
+                
+                # try:
+                #     solsniffer = json.loads(solsniffer)['tokenData']
+                #     audit = solsniffer['auditRisk']
+                #     logger.info("Retrieved security data!")
+                #     logger.info(f"audit data checker: {audit.keys()}")
+                #     if (audit['mintDisabled'] == True) and (audit['freezeDisabled'] == True) and (audit['lpBurned'] == True):
+                #         if len(solsniffer['ownersList']) >= 11:
+                #             for e in solsniffer['ownersList'][1:11]: # exclude pool %
+                #                 top10_holder += float(e['percentage'])
+                #         else:
+                #             for e in solsniffer['ownersList'][1:]: # exclude pool %
+                #                 top10_holder += float(e['percentage'])      
+                #     else:
+                #         logger.info("Skipped with audit failed!")
+                #         continue
+                # except Exception as e:
+                #     # solsniffer might not have enough time to check all newly launched tokens
+                #     # need to manually trigger and check ourselves unfortunately
+                #     # include manual security check alert!
+                #     logger.error(e, stack_info=True, exc_info=True)
+                #     logger.info("Manual security and holder checks needed!")
+                #     top10_holder = f"[Check solscan OR GMGN manually for top10 and audit data!!!](https://solsniffer.com/scanner/{row['token_address']})"
+                #     misc = f"[Check solsniffer manually!!!](https://solsniffer.com/api/v1/sniffer/token/{row['token_address']})"
                 
                 logger.info("Calling Gecko API...")
                 try:
@@ -253,6 +357,10 @@ async def run(playwright: Playwright):
                 logger.info("Market data retrieved!")
                 logger.info(f"gecko terminal checker: {gecko_terminal.keys()}")
                 
+                # Close page and context object for next iteration
+                await page.close()
+                await context.close()
+
                 # Check for negative roi, if true, reject as token already dumped
                 if '-' in gecko_terminal['data']['attributes']['price_percent_change']:
                     logger.info("Token skipped with negative price change!")
@@ -321,13 +429,16 @@ async def run(playwright: Playwright):
                         #SentMessageID = int(SentMessageResult['result']['message_id'])
                         pass
                     else:
-                        logger.info(f"Telegram Message Part {i} sent!")
+                        logger.info(f"Telegram Message Part {i} not sent!")
                         #SentMessageID = 0
 
         logger.info("Finished screening through query!")
 
     except Exception as e:
         logger.error(e, stack_info=True, exc_info=True)
+        await page.screenshot(path='/app/screenshots/example.png')
+        # Save in /app/screenshots
+        logger.info("Screenshot taken")
     
     finally:
         await browser.close()
